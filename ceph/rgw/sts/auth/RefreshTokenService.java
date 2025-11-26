@@ -16,7 +16,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import com.amazonaws.SdkClientException;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import org.apache.log4j.Logger;
 import org.apache.log4j.PropertyConfigurator;
 
@@ -90,12 +90,20 @@ public class RefreshTokenService extends Thread implements Closeable {
             br = new BufferedReader(new InputStreamReader(new FileInputStream(this.refreshTokenFile), "UTF-8"));
             return br.readLine();
         } catch (FileNotFoundException e) {
-            throw new SdkClientException("Unable to locate specified refresh token file: " + this.refreshTokenFile);
+            throw SdkClientException.builder()
+                    .message("Unable to locate specified refresh token file: " + this.refreshTokenFile)
+                    .cause(e)
+                    .build();
         } catch (IOException e) {
-            throw new SdkClientException("Unable to read refresh token from file: " + this.refreshTokenFile);
+            throw SdkClientException.builder()
+                    .message("Unable to read refresh token from file: " + this.refreshTokenFile)
+                    .cause(e)
+                    .build();
         } finally {
             try {
-                br.close();
+                if (br != null) {
+                    br.close();
+                }
             } catch (Exception ignored) {
 
             }
@@ -240,7 +248,9 @@ public class RefreshTokenService extends Thread implements Closeable {
 							}
 							logger.error("Error returned while refreshing token: "+ error + ": " + errorMsg);
 							refreshInProgress.set(false);
-							throw new SdkClientException("Error returned while refreshing token: " + error + ": " + errorMsg);
+							throw SdkClientException.builder()
+									.message("Error returned while refreshing token: " + error + ": " + errorMsg)
+									.build();
 						}
 					}
 				} catch (JSONException e) {
@@ -275,7 +285,9 @@ public class RefreshTokenService extends Thread implements Closeable {
 						logger.debug("Refresh Expiration Time from config option is: "+ refreshExpiration);
 	    			} else {
 	    				logger.debug("No refresh Expiration Time found");
-	    				throw new SdkClientException("No refreshExpirationTime found");
+	    				throw SdkClientException.builder()
+	    						.message("No refreshExpirationTime found")
+	    						.build();
 	    			}
 	    		}
 		    	if (this.result == null) {

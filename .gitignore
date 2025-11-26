@@ -1,0 +1,22 @@
+# Maven build artifacts
+target/
+
+# IDE files
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.swp
+*.swo
+*~
+
+# Test files in root
+BasicMigrationTest.java
+BasicMigrationTest.class

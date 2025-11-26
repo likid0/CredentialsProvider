@@ -2,22 +2,22 @@ package ceph.rgw.sts.auth;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.net.URI;
 import java.util.Properties;
 
 import org.apache.hadoop.conf.Configuration;
 
-import com.amazonaws.auth.AWSSessionCredentials;
-import com.amazonaws.auth.AWSSessionCredentialsProvider;
-import com.amazonaws.auth.AWSStaticCredentialsProvider;
-import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration;
-import com.amazonaws.services.securitytoken.AWSSecurityTokenService;
-import com.amazonaws.services.securitytoken.AWSSecurityTokenServiceClientBuilder;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.sts.StsClient;
 
 import org.apache.log4j.Logger;
 import org.apache.log4j.PropertyConfigurator;
 
-public class HadoopAssumeRoleWebIdentityCredentialsProvider implements AWSSessionCredentialsProvider {
+public class HadoopAssumeRoleWebIdentityCredentialsProvider implements AwsCredentialsProvider {
 	static final Logger logger = Logger.getLogger(HadoopAssumeRoleWebIdentityCredentialsProvider.class);
     	static final String LOG_PROPERTIES_FILE = "log4j.properties";
 
@@ -103,12 +103,11 @@ public class HadoopAssumeRoleWebIdentityCredentialsProvider implements AWSSessio
 		logger.trace("refreshExpirationMins: " + refreshExpirationMins);
 		logger.trace("roleArnFile: " + roleArnFile);
 
-		EndpointConfiguration endpoint = new EndpointConfiguration(stsEndpoint, "");
-        
-        AWSSecurityTokenService sts = AWSSecurityTokenServiceClientBuilder.standard()
-        								.withCredentials(new AWSStaticCredentialsProvider(new BasicAWSCredentials("", "")))
-        								.withEndpointConfiguration(endpoint)
-        								.build();
+		StsClient sts = StsClient.builder()
+								.credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("", "")))
+								.endpointOverride(URI.create(stsEndpoint))
+								.region(Region.US_EAST_1)  // Region is required but not used with endpoint override
+								.build();
 		credsProvider = new AssumeRoleWebIdentityCredentialsProvider.Builder(roleArn, roleSessionName, roleArnFile)
 							.withStsClient(sts)
 							.withPolicy(policy)
@@ -126,13 +125,8 @@ public class HadoopAssumeRoleWebIdentityCredentialsProvider implements AWSSessio
     }
 	
 	@Override
-	public AWSSessionCredentials getCredentials() {
-		return credsProvider.getCredentials();
-	}
-	
-	@Override
-	public void refresh() {
-		credsProvider.refresh();
+	public AwsSessionCredentials resolveCredentials() {
+		return credsProvider.resolveCredentials();
 	}
 
 	@Override

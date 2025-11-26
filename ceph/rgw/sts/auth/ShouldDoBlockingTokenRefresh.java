@@ -2,17 +2,16 @@ package ceph.rgw.sts.auth;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Date;
 import java.util.Properties;
-
-import com.amazonaws.annotation.ThreadSafe;
-import com.amazonaws.internal.SdkPredicate;
+import java.util.function.Predicate;
 
 import org.apache.log4j.Logger;
 import org.apache.log4j.PropertyConfigurator;
 
-@ThreadSafe
-class ShouldDoBlockingTokenRefresh extends SdkPredicate<RefreshTokenResult> {
+class ShouldDoBlockingTokenRefresh implements Predicate<RefreshTokenResult> {
 	
 	static final Logger logger = Logger.getLogger(ShouldDoAsyncTokenRefresh.class);
     static final String LOG_PROPERTIES_FILE = "log4j.properties";

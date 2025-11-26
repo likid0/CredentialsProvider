@@ -15,13 +15,10 @@
 
 package ceph.rgw.sts.auth;
 
-import com.amazonaws.AmazonClientException;
-import com.amazonaws.AmazonServiceException;
-import com.amazonaws.annotation.NotThreadSafe;
-import com.amazonaws.annotation.ThreadSafe;
-import com.amazonaws.internal.SdkPredicate;
-import com.amazonaws.util.ValidationUtils;
+import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.core.exception.SdkServiceException;
 import java.io.Closeable;
+import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,6 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Predicate;
 
 import ceph.rgw.sts.auth.DaemonThreadFactory;
 
@@ -37,7 +35,6 @@ import ceph.rgw.sts.auth.DaemonThreadFactory;
  * Handles refreshing a value with a simple synchronization policy. Does a blocking, synchronous
  * refresh if needed, otherwise queues an asynchronous refresh and returns the current value.
  */
-@ThreadSafe
 class RefreshableTask<T> implements Closeable {
     /**
      * Maximum time to wait for a blocking refresh lock before calling refresh again. This is to
@@ -75,20 +72,18 @@ class RefreshableTask<T> implements Closeable {
     /**
      * Predicate to determine whether a blocking refresh should be performed
      */
-    private final SdkPredicate<T> shouldDoBlockingRefresh;
+    private final Predicate<T> shouldDoBlockingRefresh;
 
     /**
      * Predicate to determine whether a async refresh can be done rather than a blocking refresh.
      */
-    private final SdkPredicate<T> shouldDoAsyncRefresh;
+    private final Predicate<T> shouldDoAsyncRefresh;
 
-    private RefreshableTask(Callable<T> refreshCallable, SdkPredicate<T> shouldDoBlockingRefresh,
-                            SdkPredicate<T> shouldDoAsyncRefresh) {
-        this.refreshCallable = ValidationUtils.assertNotNull(refreshCallable, "refreshCallable");
-        this.shouldDoBlockingRefresh = ValidationUtils
-                .assertNotNull(shouldDoBlockingRefresh, "shouldDoBlockingRefresh");
-        this.shouldDoAsyncRefresh = ValidationUtils
-                .assertNotNull(shouldDoAsyncRefresh, "shouldDoAsyncRefresh");
+    private RefreshableTask(Callable<T> refreshCallable, Predicate<T> shouldDoBlockingRefresh,
+                            Predicate<T> shouldDoAsyncRefresh) {
+        this.refreshCallable = Objects.requireNonNull(refreshCallable, "refreshCallable");
+        this.shouldDoBlockingRefresh = Objects.requireNonNull(shouldDoBlockingRefresh, "shouldDoBlockingRefresh");
+        this.shouldDoAsyncRefresh = Objects.requireNonNull(shouldDoAsyncRefresh, "shouldDoAsyncRefresh");
     }
 
     @Override
@@ -96,11 +91,10 @@ class RefreshableTask<T> implements Closeable {
         executor.shutdown();
     }
 
-    @NotThreadSafe
     public static class Builder<T> {
         private Callable<T> refreshCallable;
-        private SdkPredicate<T> shouldDoBlockingRefresh;
-        private SdkPredicate<T> shouldDoAsyncRefresh;
+        private Predicate<T> shouldDoBlockingRefresh;
+        private Predicate<T> shouldDoAsyncRefresh;
 
         /**
          * Set the callable that will provide the value when a refresh occurs.
@@ -117,7 +111,7 @@ class RefreshableTask<T> implements Closeable {
          *
          * @return This object for method chaining.
          */
-        public Builder withBlockingRefreshPredicate(SdkPredicate<T> shouldDoBlockingRefresh) {
+        public Builder withBlockingRefreshPredicate(Predicate<T> shouldDoBlockingRefresh) {
             this.shouldDoBlockingRefresh = shouldDoBlockingRefresh;
             return this;
         }
@@ -128,7 +122,7 @@ class RefreshableTask<T> implements Closeable {
          *
          * @return This object for method chaining.
          */
-        public Builder withAsyncRefreshPredicate(SdkPredicate<T> shouldDoAsyncRefresh) {
+        public Builder withAsyncRefreshPredicate(Predicate<T> shouldDoAsyncRefresh) {
             this.shouldDoAsyncRefresh = shouldDoAsyncRefresh;
             return this;
         }
@@ -146,10 +140,10 @@ class RefreshableTask<T> implements Closeable {
      * Return a valid value, refreshing if necessary. May return the current value, do an async
      * refresh if possible, or do a blocking refresh if needed.
      *
-     * @throws AmazonClientException If error occurs during refresh.
+     * @throws SdkClientException If error occurs during refresh.
      * @throws IllegalStateException If value if invalid after refreshing.
      */
-    public T getValue() throws AmazonClientException, IllegalStateException {
+    public T getValue() throws SdkClientException, IllegalStateException {
         if (shouldDoBlockingRefresh()) {
             blockingRefresh();
         } else if (shouldDoAsyncRefresh()) {
@@ -163,7 +157,7 @@ class RefreshableTask<T> implements Closeable {
      * Forces a refresh of the value. This method will not attempt to lock on calls to refresh the
      * value.
      *
-     * @throws AmazonClientException If error occurs during refresh.
+     * @throws SdkClientException If error occurs during refresh.
      * @throws IllegalStateException If value if invalid after refreshing.
      */
     public T forceGetValue() {
@@ -255,24 +249,24 @@ class RefreshableTask<T> implements Closeable {
         try {
             refreshableValueHolder
                     .compareAndSet(refreshableValueHolder.get(), refreshCallable.call());
-        } catch (AmazonServiceException ase) {
-            // Preserve the original ASE
-            throw ase;
-        } catch (AmazonClientException ace) {
-            // Preserve the original ACE
-            throw ace;
+        } catch (SdkServiceException sse) {
+            // Preserve the original SSE
+            throw sse;
+        } catch (SdkClientException sce) {
+            // Preserve the original SCE
+            throw sce;
         } catch (Exception e) {
-            throw new AmazonClientException(e);
+            throw SdkClientException.builder().cause(e).build();
         }
     }
 
     /**
      * If we are interrupted while waiting for a lock we just restore the interrupt status and throw
-     * an AmazonClientException back to the caller.
+     * an SdkClientException back to the caller.
      */
     private void handleInterruptedException(String message, InterruptedException cause) {
         Thread.currentThread().interrupt();
-        throw new AmazonClientException(message, cause);
+        throw SdkClientException.builder().message(message).cause(cause).build();
     }
 
 }

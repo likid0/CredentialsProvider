@@ -14,22 +14,20 @@
  */
 package ceph.rgw.sts.auth;
 
-import com.amazonaws.annotation.ThreadSafe;
-import com.amazonaws.internal.SdkPredicate;
-
-import java.util.Date;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.function.Predicate;
 
 /**
  * Predicate to determine when we do a blocking, synchronous refresh of session credentials in
  * STSSessionCredentialsProvider and STSAssumeRoleSessionCredentialsProvider.
  */
-@ThreadSafe
-class ShouldDoBlockingSessionRefresh extends SdkPredicate<SessionCredentialsHolder> {
+class ShouldDoBlockingSessionRefresh implements Predicate<SessionCredentialsHolder> {
 
     /**
      * Time before expiry within which credentials will be renewed synchronously.
      */
-    private static final int EXPIRY_TIME_MILLIS = 60 * 1000;
+    private static final Duration EXPIRY_TIME = Duration.ofMinutes(1);
 
     @Override
     public boolean test(SessionCredentialsHolder sessionCredentialsHolder) {
@@ -42,8 +40,8 @@ class ShouldDoBlockingSessionRefresh extends SdkPredicate<SessionCredentialsHold
      *
      * @param expiry expiration time of a session
      */
-    private static boolean expiring(Date expiry) {
-        long timeRemaining = expiry.getTime() - System.currentTimeMillis();
-        return timeRemaining < EXPIRY_TIME_MILLIS;
+    private static boolean expiring(Instant expiry) {
+        Duration timeRemaining = Duration.between(Instant.now(), expiry);
+        return timeRemaining.compareTo(EXPIRY_TIME) < 0;
     }
 }

@@ -15,11 +15,9 @@
 
 package ceph.rgw.sts.auth;
 
-import com.amazonaws.annotation.ThreadSafe;
-import com.amazonaws.internal.SdkPredicate;
-
-import java.util.Date;
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.function.Predicate;
 
 /**
  * Predicate to determine when it is sufficient to do an async refresh of session credentials and
@@ -27,20 +25,19 @@ import java.util.concurrent.TimeUnit;
  * expiration so we can optimistically fetch new credentials from STS and never have to block the
  * caller.
  */
-@ThreadSafe
-class ShouldDoAsyncSessionRefresh extends SdkPredicate<SessionCredentialsHolder> {
+class ShouldDoAsyncSessionRefresh implements Predicate<SessionCredentialsHolder> {
 
     /**
      * Time before expiry within which session credentials will be asynchronously refreshed.
      */
-    private static final long ASYNC_REFRESH_EXPIRATION_IN_MILLIS = TimeUnit.MINUTES.toMillis(5);
+    private static final Duration ASYNC_REFRESH_EXPIRATION = Duration.ofMinutes(5);
 
     @Override
     public boolean test(SessionCredentialsHolder sessionCredentialsHolder) {
-        Date expiryTime = sessionCredentialsHolder.getSessionCredentialsExpiration();
+        Instant expiryTime = sessionCredentialsHolder.getSessionCredentialsExpiration();
         if (expiryTime != null) {
-            long timeRemaining = expiryTime.getTime() - System.currentTimeMillis();
-            return timeRemaining < ASYNC_REFRESH_EXPIRATION_IN_MILLIS;
+            Duration timeRemaining = Duration.between(Instant.now(), expiryTime);
+            return timeRemaining.compareTo(ASYNC_REFRESH_EXPIRATION) < 0;
         }
         return false;
     }

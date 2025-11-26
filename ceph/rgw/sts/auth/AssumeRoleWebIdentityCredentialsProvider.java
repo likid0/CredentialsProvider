@@ -1,24 +1,19 @@
 package ceph.rgw.sts.auth;
 
-import com.amazonaws.AmazonClientException;
-
-import com.amazonaws.AmazonServiceException;
-import com.amazonaws.AmazonWebServiceRequest;
-import com.amazonaws.ClientConfiguration;
-import com.amazonaws.SdkClientException;
-import com.amazonaws.auth.AWSSessionCredentials;
-import com.amazonaws.auth.AWSSessionCredentialsProvider;
-import com.amazonaws.auth.AWSStaticCredentialsProvider;
-import com.amazonaws.auth.AnonymousAWSCredentials;
-import com.amazonaws.retry.PredefinedBackoffStrategies;
-import com.amazonaws.retry.RetryPolicy;
-import com.amazonaws.retry.RetryUtils;
-import com.amazonaws.services.securitytoken.AWSSecurityTokenService;
-import com.amazonaws.services.securitytoken.AWSSecurityTokenServiceClientBuilder;
-import com.amazonaws.services.securitytoken.model.AssumeRoleWithWebIdentityRequest;
-import com.amazonaws.services.securitytoken.model.AssumeRoleWithWebIdentityResult;
-import com.amazonaws.services.securitytoken.model.IDPCommunicationErrorException;
-import com.amazonaws.services.securitytoken.model.InvalidIdentityTokenException;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+import software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider;
+import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.core.exception.SdkServiceException;
+import software.amazon.awssdk.core.retry.RetryPolicy;
+import software.amazon.awssdk.core.retry.backoff.BackoffStrategy;
+import software.amazon.awssdk.core.retry.conditions.RetryCondition;
+import software.amazon.awssdk.services.sts.StsClient;
+import software.amazon.awssdk.services.sts.model.AssumeRoleWithWebIdentityRequest;
+import software.amazon.awssdk.services.sts.model.AssumeRoleWithWebIdentityResponse;
+import software.amazon.awssdk.services.sts.model.Credentials;
+import software.amazon.awssdk.services.sts.model.IdpCommunicationErrorException;
+import software.amazon.awssdk.services.sts.model.InvalidIdentityTokenException;
 
 import java.io.BufferedReader;
 import java.io.Closeable;
@@ -31,15 +26,15 @@ import java.util.concurrent.Callable;
 import org.apache.log4j.Logger;
 import org.apache.log4j.PropertyConfigurator;
 
-public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCredentialsProvider, Closeable {
-	
+public class AssumeRoleWebIdentityCredentialsProvider implements AwsCredentialsProvider, Closeable {
+
     static final Logger logger = Logger.getLogger(AssumeRoleWebIdentityCredentialsProvider.class);
     static final String LOG_PROPERTIES_FILE = "log4j.properties";
 
     /**
      * The client for starting STS sessions.
      */
-    private final AWSSecurityTokenService securityTokenService;
+    private final StsClient securityTokenService;
 
     private final RefreshTokenService refreshTokenService;
     /**
@@ -160,27 +155,24 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
      * Construct a new STS client from the settings in the builder.
      *
      * @param builder Configured builder
-     * @return New instance of AWSSecurityTokenService
+     * @return New instance of StsClient
      * @throws IllegalArgumentException if builder configuration is inconsistent
      */
-    private static AWSSecurityTokenService buildStsClient(Builder builder) throws IllegalArgumentException {
+    private static StsClient buildStsClient(Builder builder) throws IllegalArgumentException {
         if (builder.sts != null) {
             return builder.sts;
         }
 
-        RetryPolicy retryPolicy = new RetryPolicy(
-                new StsRetryCondition(),
-                new PredefinedBackoffStrategies.SDKDefaultBackoffStrategy(),
-                3,
-                true);
+        RetryPolicy retryPolicy = RetryPolicy.builder()
+                .numRetries(3)
+                .retryCondition(new StsRetryCondition())
+                .backoffStrategy(BackoffStrategy.defaultStrategy())
+                .build();
 
-        ClientConfiguration clientConfiguration = new ClientConfiguration();
-        clientConfiguration.setRetryPolicy(retryPolicy);
-        
-        return AWSSecurityTokenServiceClientBuilder.standard()
-                                                   .withClientConfiguration(clientConfiguration)
-                                                   .withCredentials(new AWSStaticCredentialsProvider(new AnonymousAWSCredentials()))
-                                                   .build();
+        return StsClient.builder()
+                .credentialsProvider(AnonymousCredentialsProvider.create())
+                .overrideConfiguration(c -> c.retryPolicy(retryPolicy))
+                .build();
     }
     
     private static RefreshTokenService buildRefreshTokenService(Builder builder) throws IllegalArgumentException {
@@ -189,11 +181,10 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
     }
 
     @Override
-    public AWSSessionCredentials getCredentials() {
+    public AwsSessionCredentials resolveCredentials() {
         return refreshableTask.getValue().getSessionCredentials();
     }
 
-    @Override
     public void refresh() {
         refreshableTask.forceGetValue();
     }
@@ -207,20 +198,26 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
      * credentials for the assumed Role sent back from STS.
      */
     private SessionCredentialsHolder newSession() {
-    	logger.trace("Refreshing Session ...");
-    	if (tokenRefreshableTask != null) {
-    		logger.trace("Checking whether to refresh access token...");
-    		this.webIdentityToken = tokenRefreshableTask.getValue().getToken();
-    	}
-        AssumeRoleWithWebIdentityRequest assumeRoleRequest = new AssumeRoleWithWebIdentityRequest()
-                .withRoleArn(getRoleArn())
-                .withWebIdentityToken(getWebIdentityToken())
-                .withRoleSessionName(this.roleSessionName)
-                .withDurationSeconds(this.durationInSeconds)
-                .withPolicy(this.policy);
+        logger.trace("Refreshing Session ...");
+        if (tokenRefreshableTask != null) {
+            logger.trace("Checking whether to refresh access token...");
+            this.webIdentityToken = tokenRefreshableTask.getValue().getToken();
+        }
+        AssumeRoleWithWebIdentityRequest.Builder requestBuilder = AssumeRoleWithWebIdentityRequest.builder()
+                .roleArn(getRoleArn())
+                .webIdentityToken(getWebIdentityToken())
+                .roleSessionName(this.roleSessionName);
 
-        AssumeRoleWithWebIdentityResult assumeRoleResult = securityTokenService.assumeRoleWithWebIdentity(assumeRoleRequest);
-        return new SessionCredentialsHolder(assumeRoleResult.getCredentials());
+        if (this.durationInSeconds != null && this.durationInSeconds > 0) {
+            requestBuilder.durationSeconds(this.durationInSeconds);
+        }
+
+        if (this.policy != null && !this.policy.isEmpty()) {
+            requestBuilder.policy(this.policy);
+        }
+
+        AssumeRoleWithWebIdentityResponse assumeRoleResult = securityTokenService.assumeRoleWithWebIdentity(requestBuilder.build());
+        return new SessionCredentialsHolder(assumeRoleResult.credentials());
     }
     
     private RefreshTokenResult newToken() {
@@ -230,20 +227,28 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
     }
 
     private String getWebIdentityToken() {
-    	if (this.webIdentityToken != null && !this.webIdentityToken.isEmpty()) {
-    		return webIdentityToken;
-    	}
+        if (this.webIdentityToken != null && !this.webIdentityToken.isEmpty()) {
+            return webIdentityToken;
+        }
         BufferedReader br = null;
         try {
             br = new BufferedReader(new InputStreamReader(new FileInputStream(webIdentityTokenFile), "UTF-8"));
             return br.readLine();
         } catch (FileNotFoundException e) {
-            throw new SdkClientException("Unable to locate specified web identity token file: " + webIdentityTokenFile);
+            throw SdkClientException.builder()
+                    .message("Unable to locate specified web identity token file: " + webIdentityTokenFile)
+                    .cause(e)
+                    .build();
         } catch (IOException e) {
-            throw new SdkClientException("Unable to read web identity token from file: " + webIdentityTokenFile);
+            throw SdkClientException.builder()
+                    .message("Unable to read web identity token from file: " + webIdentityTokenFile)
+                    .cause(e)
+                    .build();
         } finally {
             try {
-                br.close();
+                if (br != null) {
+                    br.close();
+                }
             } catch (Exception ignored) {
 
             }
@@ -251,20 +256,28 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
     }
     
     private String getRoleArn() {
-    	if (this.roleArn != null && !this.roleArn.isEmpty()) {
-    		return this.roleArn;
-    	}
+        if (this.roleArn != null && !this.roleArn.isEmpty()) {
+            return this.roleArn;
+        }
         BufferedReader br = null;
         try {
             br = new BufferedReader(new InputStreamReader(new FileInputStream(this.roleArnFile), "UTF-8"));
             return br.readLine();
         } catch (FileNotFoundException e) {
-            throw new SdkClientException("Unable to locate specified role arn file: " + this.roleArnFile);
+            throw SdkClientException.builder()
+                    .message("Unable to locate specified role arn file: " + this.roleArnFile)
+                    .cause(e)
+                    .build();
         } catch (IOException e) {
-            throw new SdkClientException("Unable to read role arn from file: " + this.roleArnFile);
+            throw SdkClientException.builder()
+                    .message("Unable to read role arn from file: " + this.roleArnFile)
+                    .cause(e)
+                    .build();
         } finally {
             try {
-                br.close();
+                if (br != null) {
+                    br.close();
+                }
             } catch (Exception ignored) {
 
             }
@@ -304,7 +317,7 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
         private String idpUrl;
         private String refreshToken;
         private String refreshTokenFile;
-        private AWSSecurityTokenService sts;
+        private StsClient sts;
         private boolean isAccessToken = true;
         private long refreshExpirationInMins = 0;
         private final String roleArnFile;
@@ -324,14 +337,13 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
         }
 
         /**
-         * Sets a preconfigured STS client to use for the credentials provider. See {@link
-         * com.amazonaws.services.securitytoken.AWSSecurityTokenServiceClientBuilder} for an easy
-         * way to configure and create an STS client.
+         * Sets a preconfigured STS client to use for the credentials provider. See
+         * {@link StsClient#builder()} for an easy way to configure and create an STS client.
          *
          * @param sts Custom STS client to use.
          * @return This object for chained calls.
          */
-        public Builder withStsClient(AWSSecurityTokenService sts) {
+        public Builder withStsClient(StsClient sts) {
             this.sts = sts;
             return this;
         }
@@ -401,24 +413,24 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
         }
     }
 
-    static class StsRetryCondition implements com.amazonaws.retry.RetryPolicy.RetryCondition {
+    static class StsRetryCondition implements RetryCondition {
 
         @Override
-        public boolean shouldRetry(AmazonWebServiceRequest originalRequest,
-                                   AmazonClientException exception,
-                                   int retriesAttempted) {
+        public boolean shouldRetry(software.amazon.awssdk.core.retry.RetryPolicyContext context) {
+            Throwable exception = context.exception();
+
             // Always retry on client exceptions caused by IOException
             if (exception.getCause() instanceof IOException) return true;
 
-            if (exception instanceof InvalidIdentityTokenException || 
+            if (exception instanceof InvalidIdentityTokenException ||
                     exception.getCause() instanceof InvalidIdentityTokenException) return true;
 
-            if (exception instanceof IDPCommunicationErrorException || 
-                    exception.getCause() instanceof IDPCommunicationErrorException) return true;
+            if (exception instanceof IdpCommunicationErrorException ||
+                    exception.getCause() instanceof IdpCommunicationErrorException) return true;
 
             // Only retry on a subset of service exceptions
-            if (exception instanceof AmazonServiceException) {
-                AmazonServiceException ase = (AmazonServiceException)exception;
+            if (exception instanceof SdkServiceException) {
+                SdkServiceException sse = (SdkServiceException)exception;
 
                 /*
                  * For 500 internal server errors and 503 service
@@ -426,7 +438,7 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
                  * an exponential back-off strategy so that we don't overload
                  * a server with a flood of retries.
                  */
-                if (RetryUtils.isRetryableServiceException(ase)) return true;
+                if (sse.statusCode() >= 500) return true;
 
                 /*
                  * Throttling is reported as a 400 error from newer services. To try
@@ -434,14 +446,14 @@ public class AssumeRoleWebIdentityCredentialsProvider implements AWSSessionCrede
                  * retry, hoping that the pause is long enough for the request to
                  * get through the next time.
                  */
-                if (RetryUtils.isThrottlingException(ase)) return true;
+                if (sse.isThrottlingException()) return true;
 
                 /*
                  * Clock skew exception. If it is then we will get the time offset
                  * between the device time and the server time to set the clock skew
                  * and then retry the request.
                  */
-                if (RetryUtils.isClockSkewError(ase)) return true;
+                if (sse.isClockSkewException()) return true;
             }
 
             return false;
